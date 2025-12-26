@@ -1,0 +1,855 @@
+is differential privacy private?
+
+https://en.wikipedia.org/wiki/Differential_privacy (accessed 051023 2027)
+
+can machine learing, when trained with data set based on reverse convolution/dsp filter type processes be used when certain assumptions/inferences about noise distributions are made to break differential privacy?
+
+
+diff privacy  supposedly uses laplace noise to mask speccific identifiers - could the [problems with:
+
+https://en.wikipedia.org/wiki/Least_absolute_deviations (accessed 0510223 2051)
+
+
+be  computationally reduced using machine learning to develop much reduced need for brute force iterative processes?
+
+
+....
+
+
+see:
+https://link.springer.com/chapter/10.1007/11681878_14
+https://link.springer.com/chapter/10.1007/978-3-319-11662-4_21
+https://link.springer.com/chapter/10.1007/978-3-642-32873-2_2
+https://link.springer.com/chapter/10.1007/978-3-030-75460-0_19
+https://link.springer.com/chapter/10.1007/978-3-642-29420-4_3
+https://link.springer.com/chapter/10.1007/978-3-642-33627-0_19
+
+(all accessed 051023 2037)
+
+
+
+
+
+
+
+
+
+
+
+The tvconv opcode takes two input signals and implements time-varying convolution. We can nominally take one of these signals as the impulse response and the other as the input signal, but, in practice, no such distinction is made. The opcode takes the length of the filter and its partitions as parameters, and includes switches to optionally fix coefficients instead of updating them continuously:
+asig tvconv ain1, ain2, xupdate1, xupdate2, ipartsize, ifilsize,
+where its parameters are as follows:
+ain1, ain2: input signals.
+xupdate1, xupdate2: update switches u for each input signal. If 𝑢=0
+, there is no update from the respective input signal, thus fixing the filter coefficients. If 𝑢>0
+, the input signal updates the filter as normal. This parameter can be driven from an audio signal, which would work on a sample-by-sample basis, from a control signal, which would work on a block of samples at a time (depending on the ksmps system parameter, the block size), or it can be a constant. Each input signal can be independently frozen using this parameter.
+ipartsize: partition size, an integer P, 0<𝑃≤𝑁
+, where N is the filter size. For values 𝑃>1
+, the actual partition size will be quantised to 𝑄=2𝑘
+, 𝑘∈ℤ
+, 𝑄≤𝑃
+.
+ifilsize: filter size, an integer N, 𝑁≥𝑃
+, where P is the partition size. For partition size values 𝑃>1
+, the actual filter size will be quantised to 𝑂=2𝑘
+, 𝑘∈ℤ
+, 𝑂≤𝑁
+.
+This opcode is programmed in C++ using the Csound Plugin Opcode Framework (CPOF) [45,46], as the TVConv class. In this code, there are, in fact, two implementations of the process, which are employed according to the partition size:
+For partition size = 1: direct convolution in the time domain is used, and any filter size is allowed. The following method in TVConv implements this (listing 1. The vectors in and ir hold the two delay lines, which take their inputs from the signals in inp and irp. The variables frz1 and frz2 are signals that control the freezing/updating operation for each input.
+Listing 1: Direct convolution implementation.
+ int dconv() {
+    csnd::AudioSig insig(this, inargs(0));
+    csnd::AudioSig irsig(this, inargs(1));
+    csnd::AudioSig outsig(this, outargs(0));
+    auto irp = irsig.begin();
+    auto inp = insig.begin();
+    auto frz1 = inargs(2);
+    auto frz2 = inargs(3);
+    auto inc1 = csound->is_asig(frz1);
+    auto inc2 = csound->is_asig(frz2);
+                    
+    for (auto &s : outsig) {
+      if(*frz1 > 0) *itn = *inp;
+      if(*frz2 > 0) *itr = *irp;
+      itn++, itr++;
+      if(itn == in.end()) {
+         itn = in.begin();
+         itr = ir.begin();
+      }
+      s = 0.;
+      for (csnd::AuxMem<MYFLT>::iterator it1 = itn,
+            it2 = ir.end() - 1; it2 >= ir.begin();
+            it1++, it2--) {
+        if(it1 == in.end()) it1  = in.begin();
+        s += *it1 * *it2;
+      }
+      frz1 += inc1, frz2 += inc2;
+      inp++, irp++;
+    }
+    return OK;
+  }
+For partition size >1
+, partitioned convolution is used (listing 2), through an overlap-add algorithm. In this case, the process is implemented in the spectral domain, and in order to make it as efficient as possible, power-of-two partition and filter sizes are enforced internally.
+Listing 2: Partitioned convolution implementation.
+  int pconv() {
+    csnd::AudioSig insig(this, inargs(0));
+    csnd::AudioSig irsig(this, inargs(1));
+    csnd::AudioSig outsig(this, outargs(0));
+    auto irp = irsig.begin();
+    auto inp = insig.begin();
+    auto *frz1 = inargs(2);
+    auto *frz2 = inargs(3);
+    auto inc1 = csound->is_asig(frz1);
+    auto inc2 = csound->is_asig(frz2);
+                 
+    for (auto &s : outsig) {
+      if(*frz1 > 0) itn[n] = *inp;
+      if(*frz2 > 0) itr[n] = *irp;
+                 
+      s = out[n] + saved[n];
+      saved[n] = out[n + pars];
+      if (++n == pars) {
+        cmplx *ins, *irs, *ous = to_cmplx(out.data());
+        std::copy(itn, itn + ffts, itnsp);
+        std::copy(itr, itr + ffts, itrsp);
+        std::fill(out.begin(), out.end(), 0.);
+        // FFT
+        csound->rfft(fwd, itnsp);
+        csound->rfft(fwd, itrsp);
+        // increment iterators
+        itnsp += ffts, itrsp += ffts;
+        itn += ffts, itr += ffts;
+        if (itnsp == insp.end()) {
+          itnsp = insp.begin();
+          itrsp = irsp.begin();
+          itn = in.begin();
+          itr = ir.begin();
+        }
+        // spectral delay line
+        for (csnd::AuxMem<MYFLT>::iterator it1 = itnsp,
+             it2 = irsp.end() - ffts; it2 >= irsp.begin();
+             it1 += ffts, it2 -= ffts) {
+          if (it1 == insp.end()) it1 = insp.begin();
+          ins =  to_cmplx(it1);
+          irs =  to_cmplx(it2);
+          // spectral product
+          for (uint32_t i = 1; i < pars; i++)
+            ous[i] += ins[i] * irs[i];
+          ous[0] += real_prod(ins[0], irs[0]);
+        }
+        // IFFT
+        csound->rfft(inv, out.data());
+        n = 0;
+      }
+      frz1 += inc1, frz2 += inc2;
+      irp++, inp++;
+    }
+    return OK;
+  }
+
+
+
+https://www.mdpi.com/2076-3417/8/1/103 (accessed  051023 1847)
+
+[np: https://open.spotify.com/episode/3QS8iWIQxczZ4dsg8SKwqh?si=LN8Sc12RRWCDFwtl61X5Eg ]
+
+
+
+/*
+  liveconv.c:
+
+  Copyright (C) 2017 Sigurd Saue, Oeyvind Brandtsegg
+
+  This file is part of Csound.
+
+  The Csound Library is free software; you can redistribute it
+  and/or modify it under the terms of the GNU Lesser General Public
+  License as published by the Free Software Foundation; either
+  version 2.1 of the License, or (at your option) any later version.
+
+  Csound is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
+
+  You should have received a copy of the GNU Lesser General Public
+  License along with Csound; if not, write to the Free Software
+  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+  02110-1301 USA
+*/
+
+/* The implementation is indebted to the ftconv opcode by Istvan Varga 2005 */
+
+#include "csoundCore.h"
+#include "interlocks.h"
+#include <math.h>
+
+/*
+** Data structures holding the load/unload information
+*/
+
+typedef struct {
+  enum { NO_LOAD, LOADING, UNLOADING } status;
+  int32_t pos;
+} load_t;
+
+typedef struct {
+  load_t  *begin;
+  load_t  *end;
+  load_t  *head;
+  int32_t                     available;
+} rbload_t;
+
+static inline
+void init_load(rbload_t *buffer, int32_t size)
+{
+    load_t* iter = buffer->begin;
+
+    buffer->head = buffer->begin;
+    buffer->end = buffer->begin + size;
+    buffer->available = 1;
+
+    for (iter = buffer->begin; iter != buffer->end; iter++) {
+      iter->status = NO_LOAD;
+      iter->pos = 0;
+    }
+}
+
+static inline
+load_t* next_load(const rbload_t *buffer, load_t* const now)
+{
+    load_t *temp = now + 1;
+    if (UNLIKELY(temp == buffer->end)) {
+      temp = buffer->begin;
+    }
+    return temp;
+}
+
+static inline
+load_t* previous_load(const rbload_t *buffer, load_t* const now)
+{
+  return (now == buffer->begin) ? (buffer->end - 1) : (now - 1);
+}
+
+/*
+** liveconv - data structure holding the internal state
+*/
+
+typedef struct {
+
+  /*
+  **  Input parameters given by user
+  */
+  OPDS    h;
+  MYFLT   *aOut;          // output buffer
+  MYFLT   *aIn;           // input buffer
+
+  MYFLT   *iFTNum;        // impulse respons table
+  MYFLT   *iPartLen;      // length of impulse response partitions
+                          // (latency <-> CPU usage)
+
+  MYFLT     *kUpdate;     // Control variable for updating the IR buffer
+                          // (+1 is start load, -1 is start unload)
+  MYFLT     *kClear;      // Clear output buffers
+
+  /*
+  ** Internal state of opcode maintained outside
+  */
+  int32_t     initDone;       /* flag to indicate initialization */
+  int32_t     cnt;            /* buffer position, 0 to partSize - 1       */
+  int32_t     nPartitions;    /* number of convolve partitions            */
+  int32_t     partSize;       /* partition length in sample frames
+                             (= iPartLen as integer) */
+  int32_t     rbCnt;          /* ring buffer index, 0 to nPartitions - 1  */
+
+  /* The following pointer point into the auxData buffer */
+  MYFLT   *tmpBuf;        /* temporary buffer for accumulating FFTs   */
+  MYFLT   *ringBuf;       /* ring buffer of FFTs of input partitions -
+                             these buffers are now computed during init */
+  MYFLT   *IR_Data;       /* impulse responses (scaled)       */
+  MYFLT   *outBuf;        /* output buffer (size=partSize*2)  */
+
+  rbload_t        loader; /* Bookkeeping of load/unload operations */
+
+  void    *fwdsetup, *invsetup;
+  AUXCH   auxData;        /* Aux data buffer allocated in init pass */
+} liveconv_t;
+
+/*
+**  Function to multiply the FFT buffers
+**    outBuf - the output of the operation (called with tmpBuf), single channel only
+**    ringBuf - the partitions of the single input signal
+**    IR_data - the impulse response of a particular channel
+**    partSize - size of partition
+**    nPartitions - number of partitions
+**    ringBuf_startPos - the starting position of the ring buffer
+**                       (corresponds to the start of the partition after the
+**                        last filled partition)
+*/
+static void multiply_fft_buffers(MYFLT *outBuf, MYFLT *ringBuf, MYFLT *IR_Data,
+                                 int32_t partSize, int nPartitions,
+                                 int32_t ringBuf_startPos)
+{
+    MYFLT   re, im, re1, re2, im1, im2;
+    MYFLT   *rbPtr, *irPtr, *outBufPtr, *outBufEndPm2, *rbEndP;
+
+    /* note: partSize must be at least 2 samples */
+    partSize <<= 1; /* locale partsize is twice the size of the partition size */
+             /* Finding the index of the last sample pair in the output buffer */
+    outBufEndPm2 = (MYFLT*) outBuf + (int32_t) (partSize - 2);
+                                                 /* The end of the ring buffer */
+    rbEndP = (MYFLT*) ringBuf + (int32_t) (partSize * nPartitions);
+    rbPtr = &(ringBuf[ringBuf_startPos]);    /* Initialize ring buffer pointer */
+    irPtr = IR_Data;                        /* Initialize impulse data pointer */
+    outBufPtr = outBuf;                    /* Initialize output buffer pointer */
+
+    /* clear output buffer to zero */
+    memset(outBuf, 0, sizeof(MYFLT)*partSize);
+
+    /*
+    ** Multiply FFTs for each partition and mix to output buffer
+    ** Note: IRs are stored in reverse partition order
+    */
+    do {
+      /* wrap ring buffer position */
+      if (rbPtr >= rbEndP)
+        rbPtr = ringBuf;
+      outBufPtr = outBuf;
+      *(outBufPtr++) +=
+        *(rbPtr++) * *(irPtr++); /* convolve DC - real part only */
+      *(outBufPtr++) +=
+        *(rbPtr++) * *(irPtr++); /* convolve Nyquist - real part only */
+      re1 = *(rbPtr++);
+      im1 = *(rbPtr++);
+      re2 = *(irPtr++);
+      im2 = *(irPtr++);
+
+      /*
+      ** Status:
+      ** outBuf + 2, ringBuf + 4, irBuf + 4
+      ** re = buf + 2, im = buf + 3
+      */
+
+      re = re1 * re2 - im1 * im2;
+      im = re1 * im2 + re2 * im1;
+      while (outBufPtr < outBufEndPm2) {
+        /* complex multiply */
+        re1 = rbPtr[0];
+        im1 = rbPtr[1];
+        re2 = irPtr[0];
+        im2 = irPtr[1];
+        outBufPtr[0] += re;
+        outBufPtr[1] += im;
+        re = re1 * re2 - im1 * im2;
+        im = re1 * im2 + re2 * im1;
+        re1 = rbPtr[2];
+        im1 = rbPtr[3];
+        re2 = irPtr[2];
+        im2 = irPtr[3];
+        outBufPtr[2] += re;
+        outBufPtr[3] += im;
+        re = re1 * re2 - im1 * im2;
+        im = re1 * im2 + re2 * im1;
+        outBufPtr += 4;
+        rbPtr += 4;
+        irPtr += 4;
+        /*
+        ** Status:
+        ** outBuf + 2 + 4n, ringBuf + 4 + 4n, irBuf + 4 + 4n
+        ** re = buf + 2 + 4n, im = buf + 3 + 4n
+        */
+      }
+      outBufPtr[0] += re;
+      outBufPtr[1] += im;
+
+    } while (--nPartitions);
+}
+static inline int32_t buf_bytes_alloc(int32_t partSize, int32_t nPartitions)
+{
+    int32_t nSmps;
+
+    nSmps = (partSize << 1);                            /* tmpBuf     */
+    nSmps += ((partSize << 1) * nPartitions);           /* ringBuf    */
+    nSmps += ((partSize << 1) * nPartitions);           /* IR_Data    */
+    nSmps += ((partSize << 1));                         /* outBuf */
+    nSmps *= (int32_t) sizeof(MYFLT);                   /* Buffer type MYFLT */
+
+    nSmps += (nPartitions+1) * (int32_t) sizeof(load_t);/* Load/unload structure */
+    /* One load/unload pr. partitions and an extra for buffering is sufficient */
+
+    return nSmps;
+}
+
+static void set_buf_pointers(liveconv_t *p, int32_t partSize, int32_t nPartitions)
+{
+    MYFLT *ptr;
+
+    ptr = (MYFLT*) (p->auxData.auxp);
+    p->tmpBuf = ptr;
+    ptr += (partSize << 1);
+    p->ringBuf = ptr;
+    ptr += ((partSize << 1) * nPartitions);
+    p->IR_Data = ptr;
+    ptr += ((partSize << 1) * nPartitions);
+    p->outBuf = ptr;
+    ptr += (partSize << 1);
+
+    p->loader.begin = (load_t*) ptr;
+}
+
+static int32_t liveconv_init(CSOUND *csound, liveconv_t *p)
+{
+    FUNC    *ftp;       // function table
+    int32_t     n, nBytes;
+
+    /* set p->partSize to the initial partition length, iPartLen */
+    p->partSize = MYFLT2LRND(*(p->iPartLen));
+    if (UNLIKELY(p->partSize < 4 || (p->partSize & (p->partSize - 1)) != 0)) {
+      // Must be a power of 2 at least as large as 4
+      return csound->InitError(csound, "%s",
+                               Str("liveconv: invalid impulse response "
+                                   "partition length"));
+    }
+
+    /* Find and assign the function table numbered iFTNum */
+    ftp = csound->FTnp2Finde(csound, p->iFTNum);
+    if (UNLIKELY(ftp == NULL))
+      return NOTOK; /* ftfind should already have printed the error message */
+
+    /* Calculate the total length  */
+    n = (int32_t) ftp->flen;
+    if (UNLIKELY(n <= 0)) {
+      return csound->InitError(csound, "%s",
+                               Str("liveconv: invalid length, or insufficient"
+                                   " IR data for convolution"));
+    }
+
+    // Compute the number of partitions (total length / partition size)
+    p->nPartitions = (n + (p->partSize - 1)) / p->partSize;
+
+    /*
+    ** Calculate the amount of aux space to allocate (in bytes) and
+    ** allocate if necessary
+    ** Function of partition size and number of partitions
+    */
+
+    nBytes = buf_bytes_alloc(p->partSize, p->nPartitions);
+    if (nBytes != (int32_t) p->auxData.size)
+      csound->AuxAlloc(csound, (int32) nBytes, &(p->auxData));
+
+    /*
+    ** From here on is initialization of data
+    */
+
+    /* initialize buffer pointers */
+    set_buf_pointers(p, p->partSize, p->nPartitions);
+
+    /* Initialize load bookkeeping */
+    init_load(&p->loader, (p->nPartitions + 1));
+
+    /* clear ring buffer to zero */
+    n = (p->partSize << 1) * p->nPartitions;
+    memset(p->ringBuf, 0, n*sizeof(MYFLT));
+
+    /* initialize buffer indices */
+    p->cnt = 0;
+    p->rbCnt = 0;
+
+    p->fwdsetup = csound->RealFFT2Setup(csound, (p->partSize << 1), FFT_FWD);
+    p->invsetup = csound->RealFFT2Setup(csound, (p->partSize << 1), FFT_INV);
+
+    /* clear IR buffer to zero */
+    memset(p->IR_Data, 0, n*sizeof(MYFLT));
+
+    /* clear output buffers to zero */
+    memset(p->outBuf, 0, (p->partSize << 1)*sizeof(MYFLT));
+
+    /*
+    ** After initialization:
+    **    Buffer indexes are zero
+    **    tmpBuf is filled with rubish
+    **    ringBuf and outBuf are filled with zero
+    **    IR_Data buffers are filled with zero
+    */
+
+    p->initDone = 1;
+    return OK;
+}
+
+static int32_t liveconv_perf(CSOUND *csound, liveconv_t *p)
+{
+    MYFLT       *x, *rBuf;
+    FUNC        *ftp;       // function table
+    int32_t         i, k, n, nSamples, rBufPos, updateIR, clearBuf, nPart, cnt;
+
+    load_t      *load_ptr;
+    // uint32_t                numLoad = p->nPartitions + 1;
+
+    uint32_t      offset = p->h.insdshead->ksmps_offset;
+    uint32_t      early  = p->h.insdshead->ksmps_no_end;
+    uint32_t      nn, nsmps = CS_KSMPS;
+
+    /* Only continue if initialized */
+    if (UNLIKELY(p->initDone <= 0)) goto err1;
+
+    ftp = csound->FTnp2Finde(csound, p->iFTNum);
+    nSamples = p->partSize;   /* Length of partition */
+                              /* Pointer to a partition of the ring buffer */
+    rBuf = &(p->ringBuf[p->rbCnt * (nSamples << 1)]);
+
+    if (UNLIKELY(offset))
+      memset(p->aOut, '\0', offset*sizeof(MYFLT));
+    if (UNLIKELY(early)) {
+      nsmps -= early;
+      memset(&p->aOut[nsmps], '\0', early*sizeof(MYFLT));
+    }
+
+    /* If clear flag is set: empty buffers and reset indexes */
+    clearBuf = MYFLT2LRND(*(p->kClear));
+    if (clearBuf) {
+
+      /* clear ring buffer to zero */
+      n = (nSamples << 1) * p->nPartitions;
+      memset(p->ringBuf, 0, n*sizeof(MYFLT));
+
+      /* initialize buffer index */
+      p->cnt = 0;
+      p->rbCnt = 0;
+
+      /* clear output buffers to zero */
+      memset(p->outBuf, 0, (nSamples << 1)*sizeof(MYFLT));
+    }
+
+    /*
+    ** How to handle the kUpdate input:
+    ** -1: Gradually clear the IR buffer
+    **      0: Do nothing
+    **  1: Gradually load the IR buffer
+    */
+
+    if (p->loader.available) {
+
+      // The buffer before the head position is the temporary buffer
+      load_ptr = previous_load(&p->loader, p->loader.head);
+      updateIR = MYFLT2LRND(*(p->kUpdate));
+      if (updateIR == 1) {
+        load_ptr->status = LOADING;
+        load_ptr->pos = 0;
+      }
+      else if (updateIR == -1) {
+        load_ptr->status = UNLOADING;
+        load_ptr->pos = 0;
+      }
+      if (load_ptr->status != NO_LOAD) {
+        p->loader.available = 0;
+
+        /* Special case: At a partition border: Make the temporary buffer
+           head position */
+        if (p->cnt == 0)
+          p->loader.head = load_ptr;
+      }
+    }
+
+    /* For each sample in the audio input buffer (length = ksmps) */
+    for (nn = offset; nn < nsmps; nn++) {
+
+      /* store input signal in buffer */
+      rBuf[p->cnt] = p->aIn[nn];
+
+      /* copy output signals from buffer (contains data from previous
+         convolution pass) */
+      p->aOut[nn] = p->outBuf[p->cnt];
+
+      /* is input buffer full ? */
+      if (++p->cnt < nSamples)
+        continue;                   /* no, continue with next sample */
+
+      /* Check if there are any IR partitions to load/unload */
+      load_ptr = p->loader.head;
+      while (load_ptr->status != NO_LOAD) {
+
+        cnt = load_ptr->pos;
+        if (load_ptr->status == LOADING) {
+
+          nPart = cnt / nSamples + 1;
+          /* IR write position, starting with the last! */
+          n = (nSamples << 1) * (p->nPartitions - nPart);
+
+          /* Iterate over IR partitions in reverse order */
+          for (k = 0; k < nSamples; k++) {
+            /* Fill IR_Data with scaled IR data, or zero if outside the IR buffer */
+            p->IR_Data[n + k] =
+              (cnt < (int32_t)ftp->flen) ? ftp->ftable[cnt] : FL(0.0);
+            cnt++;
+          }
+
+          /* pad second half of IR to zero */
+          for (k = nSamples; k < (nSamples << 1); k++)
+            p->IR_Data[n + k] = FL(0.0);
+
+          /* calculate FFT (replace in the same buffer) */
+          csound->RealFFT2(csound, p->fwdsetup, &(p->IR_Data[n]));
+
+        }
+        else if (load_ptr->status == UNLOADING) {
+
+          nPart = cnt / nSamples + 1;
+          /* IR write position, starting with the last! */
+          n = (nSamples << 1) * (p->nPartitions - nPart);
+          memset(p->IR_Data + n, 0, (nSamples << 1)*sizeof(MYFLT));
+        }
+
+        // Update load buffer and move to the next buffer
+        load_ptr->pos += nSamples;
+        if (load_ptr->pos >= p->nPartitions * nSamples) {
+          load_ptr->status = NO_LOAD;
+        }
+
+        load_ptr = next_load(&p->loader, load_ptr);
+      }
+      p->loader.available = 1;
+
+      // Check if there is a temporary buffer ready to get loaded with the
+      // next partition
+      load_ptr = previous_load(&p->loader, p->loader.head);
+      if (load_ptr->status != NO_LOAD)
+        p->loader.head = load_ptr;
+
+      /* Now the partition is filled with input --> start calculate the
+         convolution */
+      p->cnt = 0; /* reset buffer position */
+
+      /* pad input in ring buffer with zeros to double length */
+      for (i = nSamples; i < (nSamples << 1); i++)
+        rBuf[i] = FL(0.0);
+
+      /* calculate FFT of input */
+      csound->RealFFT2(csound, p->fwdsetup, rBuf);
+
+      /* update ring buffer position */
+      p->rbCnt++;
+      if (p->rbCnt >= p->nPartitions)
+        p->rbCnt = 0;
+      rBufPos = p->rbCnt * (nSamples << 1);
+
+      /* Move to next partition in ring buffer (used in next iteration to
+         store the next input sample) */
+      rBuf = &(p->ringBuf[rBufPos]);
+
+      /* multiply complex arrays --> multiplication in the frequency domain */
+      multiply_fft_buffers(p->tmpBuf, p->ringBuf, p->IR_Data,
+                           nSamples, p->nPartitions, rBufPos);
+
+      /* inverse FFT */
+      csound->RealFFT2(csound, p->invsetup, p->tmpBuf);
+
+      /*
+      ** Copy IFFT result to output buffer
+      ** The second half is left as "tail" for next iteration
+      ** The first half is overlapped with "tail" of previous block
+      */
+      x = &(p->outBuf[0]);
+      for (i = 0; i < nSamples; i++) {
+        x[i] = p->tmpBuf[i] + x[i + nSamples];
+        x[i + nSamples] = p->tmpBuf[i + nSamples];
+      }
+
+    }
+    return OK;
+
+ err1:
+    return csound->PerfError(csound, &(p->h),
+                             "%s", Str("liveconv: not initialised"));
+}
+
+/* module interface functions */
+
+static OENTRY liveconv_localops[] = {
+  {
+    "liveconv",             // name of opcode
+    sizeof(liveconv_t),     // data size of state block
+    TR, 3,                  // thread
+    "a",                    // output arguments
+    "aiikk",                // input arguments
+    (SUBR) liveconv_init,   // init function
+    (SUBR) liveconv_perf    // a-rate function
+  }
+};
+
+LINKAGE_BUILTIN(liveconv_localops)
+
+
+https://github.com/csound/csound/blob/develop/Opcodes/liveconv.c (accessed 051023 1852)
+
+
+
+pd version of soundhck tools:
+
+
+https://www.soundhack.com/freeware/#externals (051023 1904)
+
+relevant theory employed in soundhack:
+
+https://www.sfu.ca/~truax/conv.html (accessed  051023 1906)
+
+
+
+harmonic analyisis frm least squares spectral anaylsis:
+
+https://en.wikipedia.org/wiki/Least-squares_spectral_analysis (accessed 051023 1913)
+
+
+
+
+someone done it:
+https://public.lanl.gov/palmer/fastchi.html (accessed 051023 1916)
+
+
+
+grabbed cygwin to enable use 
+
+https://www.gnu.org/software/gsl/ (accessed 051023 1921)
+
+
+
+
+to run setup.exe to install cygwn, then can extract the fastchi tar and use th following to compile it: 
+
+% tar xzf FastChi2-1.03.tar.gz
+% cd FastChi2-1.03
+% make
+cc `gsl-config --cflags` -O3 -c -o fastchi2.o fastchi2.c
+cc `gsl-config --cflags` -O3 -c -o chi2driver.o chi2driver.c
+which gsl-config
+/sw/bin/gsl-config
+cc -o runchi2 fastchi2.o chi2driver.o `gsl-config --libs`
+
+
+
+once compiled and executle named runchi2 in that directory can be run in place or moved to a binary dir in PATH.
+
+
+then make `check` which will create a temprary file /tmp/fastchi2/heptest.periods and runs an analysis of hipparos spacecraf variable star obsrv data:
+[/testdata/heptest.in contains approx. 100 samples each of 187 stars -  of these, 17 have valid data. runchi2  searches for best third-harmonic fit up to 12 cycles/day]
+
+
+
+
+
+% make check
+# run test suites, exiting non-zero if they fail, printing diagnostics
+cd testdata && ./runtest
+Usage: ./../runchi2 nharmonics freqmax
+[-f freqmin]
+[-d detrendorder]
+[-t t0]
+[-T timespan]
+[-s oversampling]
+[-m chi2margin]
+[-i infile]
+[-o outfile]
+[-O outfile_with_frequency_adjustment]
+[-e stderrfile]
+[-D diagnosticfile]
+[-c 'comment string']
+
+Now running on 187 Hipparcos periodic variables.
+On a ~2.5 GHz machine this takes roughly 1 second per star.
+
++ pwd
+/tmp/FastChi2-1.03/testdata
++ ./../runchi2 3 12 -i ./heptest.in -O /tmp/fastchi2/heptest.out -e /tmp/fastchi2/heptest.err
+
+real 1m17.161s
+user 1m17.051s
+sys 0m0.095s
++ set +x
+
+Of 174 stars with nominal periods from this data or the
+previous literature, runchi2 identifies:
+71 at the nominal period (+/- 1e-4 cycles/day or 1%)
+23 at the 1/2 period alias
+25 at the 2x period alias
+25 at the 3x period alias
+(Some variation may occur on different machines, using different versions of
+compilers and libraries. The reference run has 174 stars,
+with 71, 23, 25, and 25 matching periods)
+This indicates that the software build PASSES
+%
+
+
+god blesss Los Alamos National Security, LLC and the U.S. Department of Energy's NNSA...  : D
+
+
+
+
+
+[np: https://open.spotify.com/episode/0PbMkyQ6msgNiym5wt6vyY?si=ZmjDC_mzQYyOrBjYT2vRBw  ]
+
+https://en.wikipedia.org/wiki/Gaussian_blur (accessed 051023 1947)
+
+
+
+
+"Gaussian noise can be reduced using a spatial filter, though when smoothing an image, an undesirable outcome may result in the blurring of fine-scaled image edges and details because they also correspond to blocked high frequencies. Conventional spatial filtering techniques for noise removal include: mean (convolution) filtering, median filtering and Gaussian smoothing.[1][4]"
+
+https://en.wikipedia.org/wiki/Gaussian_noise (accessed 051023 1952)
+
+
+
+
+
+
+interestingly:
+
+https://en.wikipedia.org/wiki/Constructive_analysis (accessed 051023 2000)
+
+
+uses weird wrld of inutitional logic...
+
+[see section: `Coding` ]
+
+
+
+
+^
+provides a possible way round:
+
+https://en.wikipedia.org/wiki/Indecomposable_continuum (accessed 051023 2007)
+
+
+
+
+of relevance:
+
+https://en.wikipedia.org/wiki/Sierpi%C5%84ski_carpet (051023 2010)
+
+
+[sidenote; https://en.wikipedia.org/wiki/Rule_90 (callback fro previous research into cellular automata for entirely different purposes]
+
+
+
+think ofthe data as stochastic cantor dust, except we know there is the presence of introdued 'random' noise - can dsp filter alogos be reversed by cinsiderung convolution/gaussian filter techniques  etc. and separate a noise impulse from the original data?:
+
+https://en.wikipedia.org/wiki/Cantor_set#Cantor_dust  (accessed 051023 2014)
+
+great quote from mandelbrot;
+
+`CURDLING: The construction of the Cantor bar results from the process I call curdling. It begins with a round bar. It is best to think of it as having a very low density. Then matter “curdles” out of this bar’s middle third into the end thirds, so that the positions of the latter remain unchanged. Next matter curdles out of the middle third of each end third into its end thirds, and so on ad infinitum until one is left with an infinitely large number of infinitely thin slugs of infinitely high density. These slugs are spaced along the line in the very specific fashion induced by the generating process. In this illustration, curdling (which eventually requires hammering!) stops when both the printer’s press and our eye cease to follow; the last line is indistinguishable from the last but one: each of its ultimate parts is seen as a gray slug rather than two parallel black slugs.”`
+
+hehehehe....
+
+
+
+also consider:
+
+https://en.wikipedia.org/wiki/Idempotent_analysis (051023 2019)
+
+and
+
+https://en.wikipedia.org/wiki/Idempotent_analysis (accessed 051023 2022)
+
+
+
+
